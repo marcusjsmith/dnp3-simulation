@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DNP3 Master Station</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="logo">◉</span>
+      <div>
+        <h1>SCADA Master Station</h1>
+        <p class="subtitle">DNP3 Master · Feeder FDR-12 Monitoring & Control</p>
+      </div>
+    </div>
+    <div class="header-status">
+      <span class="conn-badge" id="connBadge">Connecting…</span>
+      <span class="poll-info">Polls: <strong id="pollCount">0</strong></span>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel sld-panel">
+      <h2>Single Line Diagram — Feeder FDR-12</h2>
+      <svg viewBox="0 0 820 280" class="sld" id="sld">
+        <!-- Background grid -->
+        <defs>
+          <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
+            <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#21262d" stroke-width="0.5"/>
+          </pattern>
+        </defs>
+        <rect width="820" height="280" fill="url(#grid)"/>
+
+        <!-- Substation bus -->
+        <line x1="40" y1="80" x2="200" y2="80" class="bus"/>
+        <line x1="40" y1="100" x2="200" y2="100" class="bus"/>
+        <text x="30" y="70" class="sld-label">132 kV</text>
+        <text x="30" y="125" class="sld-label">Bus</text>
+
+        <!-- Transformer -->
+        <circle cx="240" cy="90" r="22" class="xfmr" fill="none"/>
+        <circle cx="240" cy="108" r="22" class="xfmr" fill="none"/>
+        <text x="220" y="155" class="sld-label">T1</text>
+        <line x1="200" y1="90" x2="218" y2="90" class="line"/>
+        <line x1="240" y1="130" x2="240" y2="170" class="line"/>
+
+        <!-- Feeder line to recloser -->
+        <line x1="240" y1="170" x2="380" y2="170" class="line"/>
+        <text x="280" y="162" class="sld-label">12 kV Feeder</text>
+
+        <!-- Recloser symbol -->
+        <g id="recloserSymbol" transform="translate(380, 170)">
+          <line x1="0" y1="0" x2="0" y2="-30" class="line"/>
+          <rect x="-18" y="-52" width="36" height="22" rx="3" class="recloser-box" id="recloserBox"/>
+          <text x="0" y="-38" text-anchor="middle" class="recloser-text" id="recloserText">RC</text>
+          <!-- Breaker contacts -->
+          <line x1="0" y1="-30" x2="0" y2="-10" class="line"/>
+          <line x1="-12" y1="0" x2="-4" y2="0" class="line contact-left"/>
+          <line x1="4" y1="0" x2="12" y2="0" class="line contact-right"/>
+          <line id="breakerArm" x1="-4" y1="0" x2="4" y2="-14" class="line breaker-arm"/>
+          <line x1="0" y1="0" x2="0" y2="30" class="line"/>
+        </g>
+        <text x="362" y="215" class="sld-label">Recloser R-101</text>
+
+        <!-- Load side -->
+        <line x1="392" y1="170" x2="520" y2="170" class="line" id="loadLine"/>
+        <line x1="520" y1="170" x2="520" y2="220" class="line"/>
+        <line x1="490" y1="220" x2="550" y2="220" class="line"/>
+        <line x1="500" y1="230" x2="540" y2="230" class="line"/>
+        <line x1="510" y1="240" x2="530" y2="240" class="line"/>
+        <text x="490" y="260" class="sld-label">Load Zone</text>
+
+        <!-- Master station indicator -->
+        <rect x="640" y="30" width="160" height="90" rx="6" class="master-box"/>
+        <text x="720" y="55" text-anchor="middle" class="sld-title">Master Station</text>
+        <text x="720" y="75" text-anchor="middle" class="sld-label">DNP3 TCP</text>
+        <text x="720" y="95" text-anchor="middle" class="sld-label">{{ outstation_host }}:{{ outstation_port }}</text>
+        <line x1="600" y1="75" x2="640" y2="75" class="comm-line" stroke-dasharray="6,4"/>
+        <line x1="560" y1="75" x2="600" y2="75" class="comm-line" stroke-dasharray="6,4"/>
+        <line x1="560" y1="75" x2="560" y2="140" class="comm-line" stroke-dasharray="6,4"/>
+        <line x1="380" y1="140" x2="560" y2="140" class="comm-line" stroke-dasharray="6,4"/>
+        <line x1="380" y1="140" x2="380" y2="118" class="comm-line" stroke-dasharray="6,4"/>
+        <text x="470" y="132" class="sld-label comm-label">DNP3 Link</text>
+
+        <!-- Live values overlay -->
+        <rect x="30" y="190" width="200" height="75" rx="4" class="value-box"/>
+        <text x="45" y="212" class="value-label">V = <tspan id="sldVoltage">—</tspan> kV</text>
+        <text x="45" y="232" class="value-label">I = <tspan id="sldCurrent">—</tspan> A</text>
+        <text x="45" y="252" class="value-label">P = <tspan id="sldPower">—</tspan> kW</text>
+      </svg>
+    </section>
+
+    <div class="columns">
+      <section class="panel">
+        <h2>Recloser Status</h2>
+        <div class="status-grid">
+          <div class="status-item" id="stClosed">
+            <span class="dot"></span><span>Breaker Closed (BI-0)</span>
+          </div>
+          <div class="status-item" id="stOpen">
+            <span class="dot"></span><span>Breaker Open (BI-1)</span>
+          </div>
+          <div class="status-item" id="stFault">
+            <span class="dot"></span><span>Fault (BI-2)</span>
+          </div>
+        </div>
+        <div class="metrics compact">
+          <div class="metric"><span class="metric-label">Voltage</span><span class="metric-value" id="voltage">—</span><span class="metric-unit">kV</span></div>
+          <div class="metric"><span class="metric-label">Current</span><span class="metric-value" id="current">—</span><span class="metric-unit">A</span></div>
+          <div class="metric"><span class="metric-label">Power</span><span class="metric-value" id="power">—</span><span class="metric-unit">kW</span></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Control Commands</h2>
+        <p class="hint">Direct operate on Binary Output 0 (CROB LATCH_OFF / LATCH_ON)</p>
+        <div class="btn-row">
+          <button class="btn trip" id="btnTrip" disabled>Send OPEN Command</button>
+          <button class="btn close" id="btnClose" disabled>Send CLOSE Command</button>
+        </div>
+        <p class="meta">Last command: <strong id="lastCmd">—</strong></p>
+        <p class="meta">Last poll: <strong id="lastPoll">—</strong></p>
+      </section>
+    </div>
+
+    <section class="panel">
+      <h2>DNP3 Point Database (Polled)</h2>
+      <table class="point-table">
+        <thead>
+          <tr><th>Index</th><th>Object</th><th>Description</th><th>Value</th></tr>
+        </thead>
+        <tbody id="pointTable"></tbody>
+      </table>
+    </section>
+  </main>
+
+  <footer>
+    DNP3 Master ID 2 → Outstation ID 1 · Port {{ outstation_port }}
+  </footer>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    function setActive(el, active) {
+      el.classList.toggle('active', active);
+      el.classList.toggle('inactive', !active);
+    }
+
+    function updateUI(data) {
+      $('voltage').textContent = data.voltage_kv.toFixed(2);
+      $('current').textContent = data.current_a.toFixed(1);
+      $('power').textContent = data.power_kw.toFixed(1);
+      $('sldVoltage').textContent = data.voltage_kv.toFixed(2);
+      $('sldCurrent').textContent = data.current_a.toFixed(1);
+      $('sldPower').textContent = data.power_kw.toFixed(1);
+      $('lastCmd').textContent = data.last_command;
+      $('lastPoll').textContent = data.last_poll || '—';
+      $('pollCount').textContent = data.poll_count;
+
+      const closed = data.breaker_closed;
+      setActive($('stClosed'), closed);
+      setActive($('stOpen'), data.breaker_open);
+      setActive($('stFault'), data.fault);
+
+      const badge = $('connBadge');
+      badge.textContent = data.dnp3_connected ? 'DNP3 Connected' : 'DNP3 Disconnected';
+      badge.classList.toggle('connected', data.dnp3_connected);
+
+      $('btnTrip').disabled = !data.dnp3_connected;
+      $('btnClose').disabled = !data.dnp3_connected;
+
+      const box = $('recloserBox');
+      const arm = $('breakerArm');
+      const loadLine = $('loadLine');
+      if (closed) {
+        box.setAttribute('fill', '#238636');
+        arm.setAttribute('y2', '0');
+        loadLine.classList.remove('de-energized');
+      } else {
+        box.setAttribute('fill', '#da3633');
+        arm.setAttribute('y2', '-14');
+        loadLine.classList.add('de-energized');
+      }
+
+      $('pointTable').innerHTML = `
+        <tr><td>0</td><td>G30V6</td><td>Analog – Voltage</td><td>${data.voltage_kv.toFixed(2)} kV</td></tr>
+        <tr><td>1</td><td>G30V6</td><td>Analog – Current</td><td>${data.current_a.toFixed(1)} A</td></tr>
+        <tr><td>2</td><td>G30V6</td><td>Analog – Power</td><td>${data.power_kw.toFixed(1)} kW</td></tr>
+        <tr><td>0</td><td>G1V2</td><td>Binary – Breaker Closed</td><td>${data.breaker_closed}</td></tr>
+        <tr><td>1</td><td>G1V2</td><td>Binary – Breaker Open</td><td>${data.breaker_open}</td></tr>
+        <tr><td>2</td><td>G1V2</td><td>Binary – Fault</td><td>${data.fault}</td></tr>
+      `;
+    }
+
+    async function refresh() {
+      try {
+        const res = await fetch('/api/status');
+        updateUI(await res.json());
+      } catch (e) {
+        $('connBadge').textContent = 'Offline';
+      }
+    }
+
+    async function sendCommand(path) {
+      const res = await fetch(path, { method: 'POST' });
+      const data = await res.json();
+      if (data.ok) updateUI(data.state);
+      else alert(data.error || 'Command failed');
+    }
+
+    $('btnTrip').addEventListener('click', () => sendCommand('/api/command/trip'));
+    $('btnClose').addEventListener('click', () => sendCommand('/api/command/close'));
+
+    setInterval(refresh, 1000);
+    refresh();
+  </script>
+</body>
+</html>

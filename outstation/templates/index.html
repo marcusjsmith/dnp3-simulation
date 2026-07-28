@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DNP3 Recloser Outstation</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="logo">⚡</span>
+      <div>
+        <h1>Recloser Outstation</h1>
+        <p class="subtitle">DNP3 Outstation · IEEE 1815 Simulation</p>
+      </div>
+    </div>
+    <div class="conn-badge" id="connBadge">Connecting…</div>
+  </header>
+
+  <main>
+    <section class="panel hero">
+      <div class="breaker-display" id="breakerDisplay">
+        <svg viewBox="0 0 120 120" class="breaker-icon">
+          <circle cx="60" cy="60" r="52" fill="none" stroke="currentColor" stroke-width="3"/>
+          <line x1="30" y1="60" x2="48" y2="60" stroke="currentColor" stroke-width="4"/>
+          <line x1="72" y1="60" x2="90" y2="60" stroke="currentColor" stroke-width="4"/>
+          <line id="breakerArm" x1="48" y1="60" x2="72" y2="38" stroke="currentColor" stroke-width="4"/>
+        </svg>
+        <div class="breaker-label" id="breakerLabel">CLOSED</div>
+      </div>
+      <div class="metrics">
+        <div class="metric">
+          <span class="metric-label">Voltage</span>
+          <span class="metric-value" id="voltage">—</span>
+          <span class="metric-unit">kV</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Current</span>
+          <span class="metric-value" id="current">—</span>
+          <span class="metric-unit">A</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Active Power</span>
+          <span class="metric-value" id="power">—</span>
+          <span class="metric-unit">kW</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Binary Inputs (Group 1)</h2>
+      <div class="status-grid">
+        <div class="status-item" id="biClosed">
+          <span class="dot"></span>
+          <span>BI-0 Breaker Closed</span>
+        </div>
+        <div class="status-item" id="biOpen">
+          <span class="dot"></span>
+          <span>BI-1 Breaker Open</span>
+        </div>
+        <div class="status-item" id="biFault">
+          <span class="dot"></span>
+          <span>BI-2 Fault</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>DNP3 Point Map</h2>
+      <table class="point-table">
+        <thead>
+          <tr><th>Index</th><th>Group/Var</th><th>Description</th><th>Value</th></tr>
+        </thead>
+        <tbody id="pointTable"></tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <h2>Local Controls</h2>
+      <p class="hint">These act on the outstation locally. Master commands arrive via DNP3 BO-0.</p>
+      <div class="btn-row">
+        <button class="btn trip" id="btnTrip">Simulate Fault / Trip</button>
+        <button class="btn close" id="btnClose">Close Breaker</button>
+      </div>
+      <p class="meta">Last command: <strong id="lastCmd">—</strong></p>
+      <p class="meta">Commands received: <strong id="cmdCount">0</strong></p>
+      <p class="meta">Last update: <strong id="lastUpdate">—</strong></p>
+    </section>
+  </main>
+
+  <footer>
+    DNP3 TCP port 20000 · Outstation ID 1 · Master ID 2
+  </footer>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    function setActive(el, active) {
+      el.classList.toggle('active', active);
+      el.classList.toggle('inactive', !active);
+    }
+
+    function updateUI(data) {
+      $('voltage').textContent = data.voltage_kv.toFixed(2);
+      $('current').textContent = data.current_a.toFixed(1);
+      $('power').textContent = data.power_kw.toFixed(1);
+      $('lastCmd').textContent = data.last_command;
+      $('cmdCount').textContent = data.command_count;
+      $('lastUpdate').textContent = data.last_update;
+
+      const closed = data.breaker_closed;
+      const display = $('breakerDisplay');
+      display.classList.toggle('closed', closed);
+      display.classList.toggle('open', !closed);
+      $('breakerLabel').textContent = closed ? 'CLOSED' : 'OPEN';
+      $('breakerArm').setAttribute('y2', closed ? '60' : '38');
+
+      setActive($('biClosed'), data.breaker_closed);
+      setActive($('biOpen'), data.breaker_open);
+      setActive($('biFault'), data.fault);
+
+      const badge = $('connBadge');
+      badge.textContent = data.dnp3_connected ? 'Master Connected' : 'Awaiting Master';
+      badge.classList.toggle('connected', data.dnp3_connected);
+
+      $('pointTable').innerHTML = `
+        <tr><td>0</td><td>30/5</td><td>Analog – Voltage</td><td>${data.voltage_kv.toFixed(2)} kV</td></tr>
+        <tr><td>1</td><td>30/1</td><td>Analog – Current</td><td>${data.current_a.toFixed(1)} A</td></tr>
+        <tr><td>2</td><td>30/1</td><td>Analog – Power</td><td>${data.power_kw.toFixed(1)} kW</td></tr>
+        <tr><td>0</td><td>1/2</td><td>Binary – Breaker Closed</td><td>${data.breaker_closed}</td></tr>
+        <tr><td>1</td><td>1/2</td><td>Binary – Breaker Open</td><td>${data.breaker_open}</td></tr>
+        <tr><td>2</td><td>1/2</td><td>Binary – Fault</td><td>${data.fault}</td></tr>
+      `;
+    }
+
+    async function refresh() {
+      try {
+        const res = await fetch('/api/status');
+        updateUI(await res.json());
+      } catch (e) {
+        $('connBadge').textContent = 'Offline';
+      }
+    }
+
+    $('btnTrip').addEventListener('click', async () => {
+      await fetch('/api/local-trip', { method: 'POST' });
+      refresh();
+    });
+
+    $('btnClose').addEventListener('click', async () => {
+      await fetch('/api/local-close', { method: 'POST' });
+      refresh();
+    });
+
+    setInterval(refresh, 1000);
+    refresh();
+  </script>
+</body>
+</html>

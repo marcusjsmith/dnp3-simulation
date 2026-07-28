@@ -1,0 +1,35 @@
+services:
+  outstation:
+    build: ./outstation
+    platform: linux/amd64
+    container_name: dnp3-recloser-outstation
+    ports:
+      - "20000:20000"
+      - "8081:8080"
+    networks:
+      - dnp3net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/status')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  master:
+    build: ./master
+    platform: linux/amd64
+    container_name: dnp3-master-station
+    ports:
+      - "8080:8080"
+    environment:
+      OUTSTATION_HOST: outstation
+      OUTSTATION_PORT: "20000"
+    depends_on:
+      outstation:
+        condition: service_healthy
+    networks:
+      - dnp3net
+
+networks:
+  dnp3net:
+    driver: bridge
