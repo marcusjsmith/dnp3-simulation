@@ -31,12 +31,16 @@ def api_status():
 @app.route("/api/local-trip", methods=["POST"])
 def local_trip():
     state.trip("Local UI")
+    if outstation:
+        outstation._mark_dirty()
     return jsonify({"ok": True, "state": state.snapshot()})
 
 
 @app.route("/api/local-close", methods=["POST"])
 def local_close():
     state.close("Local UI")
+    if outstation:
+        outstation._mark_dirty()
     return jsonify({"ok": True, "state": state.snapshot()})
 
 

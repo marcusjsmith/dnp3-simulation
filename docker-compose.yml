@@ -3,6 +3,7 @@ services:
     build: ./outstation
     platform: linux/amd64
     container_name: dnp3-recloser-outstation
+    restart: unless-stopped
     ports:
       - "20000:20000"
       - "8081:8080"

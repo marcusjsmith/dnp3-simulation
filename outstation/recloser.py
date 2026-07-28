@@ -13,6 +13,7 @@ from pydnp3 import asiodnp3, opendnp3
 from dnp3demo.control_workflow_demo import MyOutStation
 
 _log = logging.getLogger(__name__)
+_SUPPRESS = opendnp3.EventMode.Suppress
 
 
 @dataclass
@@ -45,6 +46,10 @@ class RecloserState:
                 "dnp3_connected": self.dnp3_connected,
                 "command_count": self.command_count,
             }
+
+    def set_dnp3_connected(self, connected: bool) -> None:
+        with self._lock:
+            self.dnp3_connected = connected
 
     def trip(self, source: str = "DNP3") -> None:
         with self._lock:
@@ -87,42 +92,60 @@ def _now() -> str:
 class RecloserOutstation(MyOutStation):
     """DNP3 outstation with recloser-specific command handling.
 
-    All apply_update calls run on the opendnp3 ASIO thread only. A background
-    thread simulates process values; ASIO callbacks flush them to the DNP3 database.
+    The opendnp3 stack is not thread-safe. A background thread only updates
+    RecloserState; ASIO callbacks flush values to the DNP3 database in a single
+    batched Apply() to avoid re-entrant deadlocks.
     """
 
     def __init__(self, state: RecloserState, **kwargs):
         self.state = state
-        self._pending_dnp3_sync = True
-        self._stop_sim = threading.Event()
+        self._dirty = threading.Event()
+        self._dirty.set()
+        self._sync_in_progress = False
         super().__init__(**kwargs)
 
-    def apply_update(self, measurement, index, *, force_event: bool = False):
-        """Write a point to the outstation database without generating unsolicited events."""
-        mode = opendnp3.EventMode.Force if force_event else opendnp3.EventMode.Suppress
-        update = asiodnp3.UpdateBuilder().Update(measurement, index, mode).Build()
-        self.outstation.Apply(update)
-        self.db_handler.process(measurement, index)
+    def _mark_dirty(self) -> None:
+        self._dirty.set()
 
-    def _sync_to_dnp3(self) -> None:
-        """Push current simulator state into the DNP3 database (ASIO thread only)."""
-        if not self._pending_dnp3_sync:
+    def _apply_batch(self, points: list[tuple[object, int]]) -> None:
+        """Apply multiple point updates in one stack call (ASIO thread only)."""
+        if not points:
             return
-        self._pending_dnp3_sync = False
-        snap = self.state.snapshot()
+        builder = asiodnp3.UpdateBuilder()
+        for measurement, index in points:
+            builder.Update(measurement, index, _SUPPRESS)
+        self.outstation.Apply(builder.Build())
+        for measurement, index in points:
+            self.db_handler.process(measurement, index)
+
+    def _sync_to_dnp3(self, extra: list[tuple[object, int]] | None = None) -> None:
+        """Push simulator state into the DNP3 database (ASIO thread only)."""
+        if self._sync_in_progress:
+            self._mark_dirty()
+            return
+        if not self._dirty.is_set() and not extra:
+            return
+
+        self._sync_in_progress = True
         try:
-            self.apply_update(opendnp3.Analog(value=float(snap["voltage_kv"])), 0)
-            self.apply_update(opendnp3.Analog(value=float(snap["current_a"])), 1)
-            self.apply_update(opendnp3.Analog(value=float(snap["power_kw"])), 2)
-            self.apply_update(opendnp3.Binary(value=snap["breaker_closed"]), 0)
-            self.apply_update(opendnp3.Binary(value=snap["breaker_open"]), 1)
-            self.apply_update(opendnp3.Binary(value=snap["fault"]), 2)
+            self._dirty.clear()
+            snap = self.state.snapshot()
+            points: list[tuple[object, int]] = [
+                (opendnp3.Analog(value=float(snap["voltage_kv"])), 0),
+                (opendnp3.Analog(value=float(snap["current_a"])), 1),
+                (opendnp3.Analog(value=float(snap["power_kw"])), 2),
+                (opendnp3.Binary(value=snap["breaker_closed"]), 0),
+                (opendnp3.Binary(value=snap["breaker_open"]), 1),
+                (opendnp3.Binary(value=snap["fault"]), 2),
+            ]
+            if extra:
+                points.extend(extra)
+            self._apply_batch(points)
         except Exception as exc:
             _log.warning("DNP3 sync failed: %s", exc)
-            self._pending_dnp3_sync = True
-
-    def _mark_dirty(self) -> None:
-        self._pending_dnp3_sync = True
+            self._mark_dirty()
+        finally:
+            self._sync_in_progress = False
 
     def process_point_value(self, command_type, command, index, op_type):
         if command_type == "Operate" and index == 0:
@@ -132,53 +155,41 @@ class RecloserOutstation(MyOutStation):
                 elif command.rawCode == 3:
                     self.state.close("DNP3 LATCH_ON")
                 self._mark_dirty()
-        # Acknowledge command (binary output status) — runs on ASIO thread.
-        update = None
-        if type(command) is opendnp3.ControlRelayOutputBlock:
-            bi_value = command.rawCode == 3
-            update = opendnp3.BinaryOutputStatus(value=bi_value)
-        elif type(command) in (
-            opendnp3.AnalogOutputDouble64,
-            opendnp3.AnalogOutputFloat32,
-            opendnp3.AnalogOutputInt32,
-            opendnp3.AnalogOutputInt16,
-        ):
-            update = opendnp3.AnalogOutputStatus(value=command.value)
-        if update is not None and command_type == "Operate":
-            self.apply_update(update, index, force_event=True)
-        self._sync_to_dnp3()
+
+        extra = None
+        if command_type == "Operate":
+            if type(command) is opendnp3.ControlRelayOutputBlock:
+                extra = [(opendnp3.BinaryOutputStatus(value=command.rawCode == 3), index)]
+            elif type(command) in (
+                opendnp3.AnalogOutputDouble64,
+                opendnp3.AnalogOutputFloat32,
+                opendnp3.AnalogOutputInt32,
+                opendnp3.AnalogOutputInt16,
+            ):
+                extra = [(opendnp3.AnalogOutputStatus(value=command.value), index)]
+
+        self._sync_to_dnp3(extra=extra)
 
     def GetApplicationIIN(self):
-        """Called by the stack during master requests — flush pending measurements."""
+        """Master poll — flush pending measurements; never call stack APIs off-thread."""
+        self.state.set_dnp3_connected(True)
         self._sync_to_dnp3()
         return super().GetApplicationIIN()
 
-    def OnKeepAliveSuccess(self):
-        self._sync_to_dnp3()
-        return super().OnKeepAliveSuccess()
-
     def OnKeepAliveFailure(self):
-        self._sync_to_dnp3()
+        self.state.set_dnp3_connected(False)
         return super().OnKeepAliveFailure()
-
-    def OnKeepAliveInitiated(self):
-        self._sync_to_dnp3()
-        return super().OnKeepAliveInitiated()
 
 
 def simulation_loop(
-    outstation: RecloserOutstation,
     state: RecloserState,
+    outstation: RecloserOutstation,
     stop_event: threading.Event,
 ) -> None:
     """Update simulator state only — never touch the DNP3 stack from this thread."""
     while not stop_event.is_set():
         state.tick()
         outstation._mark_dirty()
-        try:
-            state.dnp3_connected = outstation.is_connected
-        except Exception:
-            state.dnp3_connected = False
         stop_event.wait(1.0)
 
 
@@ -199,7 +210,7 @@ def start_outstation(
     stop_event = threading.Event()
     thread = threading.Thread(
         target=simulation_loop,
-        args=(outstation, state, stop_event),
+        args=(state, outstation, stop_event),
         daemon=True,
         name="recloser-sim",
     )
