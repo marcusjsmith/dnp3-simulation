@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import random
 import threading
 import time
@@ -11,6 +12,11 @@ from datetime import datetime, timezone
 from pydnp3 import opendnp3
 from dnp3demo.control_workflow_demo import MyOutStation
 
+_log = logging.getLogger(__name__)
+
+# Serialize all opendnp3 database writes — the C++ stack is not thread-safe.
+_dnp3_lock = threading.Lock()
+
 
 @dataclass
 class RecloserState:
@@ -18,7 +24,7 @@ class RecloserState:
 
     voltage_kv: float = 12.0
     current_a: float = 185.0
-    power_kw: float = 2200.0
+    power_kw: float = 2.2
     breaker_closed: bool = True
     fault: bool = False
     last_command: str = "None"
@@ -81,6 +87,17 @@ def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
+def _push_state_to_dnp3(outstation: RecloserOutstation, snap: dict) -> None:
+    """Apply all point updates under the DNP3 lock."""
+    with _dnp3_lock:
+        outstation.apply_update(opendnp3.Analog(value=float(snap["voltage_kv"])), 0)
+        outstation.apply_update(opendnp3.Analog(value=float(snap["current_a"])), 1)
+        outstation.apply_update(opendnp3.Analog(value=float(snap["power_kw"])), 2)
+        outstation.apply_update(opendnp3.Binary(value=snap["breaker_closed"]), 0)
+        outstation.apply_update(opendnp3.Binary(value=snap["breaker_open"]), 1)
+        outstation.apply_update(opendnp3.Binary(value=snap["fault"]), 2)
+
+
 class RecloserOutstation(MyOutStation):
     """DNP3 outstation with recloser-specific command handling."""
 
@@ -89,41 +106,37 @@ class RecloserOutstation(MyOutStation):
         super().__init__(**kwargs)
 
     def process_point_value(self, command_type, command, index, op_type):
+        # Update process state only — DNP3 point sync happens on the dedicated sync thread.
         if command_type == "Operate" and index == 0:
             if isinstance(command, opendnp3.ControlRelayOutputBlock):
                 if command.rawCode == 4:  # LATCH_OFF / trip
                     self.state.trip("DNP3 LATCH_OFF")
-                    self._sync_points()
                 elif command.rawCode == 3:  # LATCH_ON / close
                     self.state.close("DNP3 LATCH_ON")
-                    self._sync_points()
-        super().process_point_value(command_type, command, index, op_type)
-
-    def _sync_points(self) -> None:
-        snap = self.state.snapshot()
-        self.apply_update(opendnp3.Analog(value=float(snap["voltage_kv"])), 0)
-        self.apply_update(opendnp3.Analog(value=float(snap["current_a"])), 1)
-        self.apply_update(opendnp3.Analog(value=float(snap["power_kw"])), 2)
-        self.apply_update(opendnp3.Binary(value=snap["breaker_closed"]), 0)
-        self.apply_update(opendnp3.Binary(value=snap["breaker_open"]), 1)
-        self.apply_update(opendnp3.Binary(value=snap["fault"]), 2)
+        # Acknowledge the command to the master (must stay on this call path).
+        with _dnp3_lock:
+            super().process_point_value(command_type, command, index, op_type)
 
 
-def simulation_loop(outstation: RecloserOutstation, state: RecloserState, stop_event: threading.Event) -> None:
-    """Periodically update analog/binary inputs on the DNP3 database."""
+def dnp3_sync_loop(
+    outstation: RecloserOutstation,
+    state: RecloserState,
+    stop_event: threading.Event,
+) -> None:
+    """Single thread owns all periodic state ticks and DNP3 database writes."""
     while not stop_event.is_set():
         state.tick()
-        state.dnp3_connected = outstation.is_connected
+        try:
+            state.dnp3_connected = outstation.is_connected
+        except Exception:
+            state.dnp3_connected = False
+
         snap = state.snapshot()
         try:
-            outstation.apply_update(opendnp3.Analog(value=float(snap["voltage_kv"])), 0)
-            outstation.apply_update(opendnp3.Analog(value=float(snap["current_a"])), 1)
-            outstation.apply_update(opendnp3.Analog(value=float(snap["power_kw"])), 2)
-            outstation.apply_update(opendnp3.Binary(value=snap["breaker_closed"]), 0)
-            outstation.apply_update(opendnp3.Binary(value=snap["breaker_open"]), 1)
-            outstation.apply_update(opendnp3.Binary(value=snap["fault"]), 2)
-        except Exception:
-            pass
+            _push_state_to_dnp3(outstation, snap)
+        except Exception as exc:
+            _log.warning("DNP3 sync failed: %s", exc)
+
         stop_event.wait(1.0)
 
 
@@ -142,10 +155,10 @@ def start_outstation(
     outstation.start()
     stop_event = threading.Event()
     thread = threading.Thread(
-        target=simulation_loop,
+        target=dnp3_sync_loop,
         args=(outstation, state, stop_event),
         daemon=True,
-        name="recloser-sim",
+        name="dnp3-sync",
     )
     thread.start()
     time.sleep(0.5)

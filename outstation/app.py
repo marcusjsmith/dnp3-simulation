@@ -4,7 +4,8 @@ import os
 import signal
 import sys
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template
+from waitress import serve
 
 from recloser import RecloserState, start_outstation
 
@@ -55,7 +56,7 @@ def main():
     signal.signal(signal.SIGINT, shutdown_handler)
 
     outstation, stop_event, _ = start_outstation(state, port=DNP3_PORT)
-    app.run(host="0.0.0.0", port=WEB_PORT, debug=False, threaded=True)
+    serve(app, host="0.0.0.0", port=WEB_PORT, threads=4)
 
 
 if __name__ == "__main__":
