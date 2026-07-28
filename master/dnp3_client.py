@@ -22,6 +22,11 @@ from trace_log import (
     trace_buffer,
 )
 
+# Serialize every call into the opendnp3 master stack (not thread-safe).
+_master_lock = threading.Lock()
+# Pause background polling while a command is in flight.
+_command_active = threading.Event()
+
 
 @dataclass
 class MasterState:
@@ -107,24 +112,38 @@ def _poll_group(master: MyMaster, group: int, variation: int):
     return result
 
 
+def _run_poll_cycle(master: MyMaster, state: MasterState) -> None:
+    """Execute one poll cycle — must be called with _master_lock held."""
+    analog_result = _poll_group(master, 30, 6)
+    binary_result = _poll_group(master, 1, 2)
+    analogs, _ = _extract_points(analog_result)
+    _, binaries = _extract_points(binary_result)
+    if not analogs:
+        analog_result = _poll_group(master, 30, 1)
+        analogs, _ = _extract_points(analog_result)
+    state.update_from_poll(analogs, binaries)
+
+
 def polling_loop(master: MyMaster, state: MasterState, stop_event: threading.Event) -> None:
     while not stop_event.is_set():
+        if _command_active.is_set():
+            stop_event.wait(0.1)
+            continue
+
         was_connected = state.dnp3_connected
-        state.set_connected(master.is_connected)
-        if master.is_connected:
-            if not was_connected:
-                trace_buffer.add("TX", "LINK", "Link status test / reset communication")
-            try:
-                analog_result = _poll_group(master, 30, 6)
-                binary_result = _poll_group(master, 1, 2)
-                analogs, _ = _extract_points(analog_result)
-                _, binaries = _extract_points(binary_result)
-                if not analogs:
-                    analog_result = _poll_group(master, 30, 1)
-                    analogs, _ = _extract_points(analog_result)
-                state.update_from_poll(analogs, binaries)
-            except Exception as exc:
-                trace_buffer.add("INFO", "APP", f"Poll error — {exc}")
+        with _master_lock:
+            if _command_active.is_set():
+                continue
+            connected = master.is_connected
+            state.set_connected(connected)
+            if connected:
+                if not was_connected:
+                    trace_buffer.add("TX", "LINK", "Link status test / reset communication")
+                try:
+                    _run_poll_cycle(master, state)
+                except Exception as exc:
+                    trace_buffer.add("INFO", "APP", f"Poll error — {exc}")
+
         stop_event.wait(1.5)
 
 
@@ -169,14 +188,24 @@ def start_master(
 
 
 def send_trip_command(master: MyMaster, state: MasterState) -> None:
-    log_command("LATCH_OFF", 0)
-    cmd = opendnp3.ControlRelayOutputBlock(opendnp3.ControlCode.LATCH_OFF)
-    master.send_direct_operate_command(cmd, 0, _command_callback)
-    state.set_command("OPEN / TRIP (BO-0 LATCH_OFF)")
+    _command_active.set()
+    try:
+        log_command("LATCH_OFF", 0)
+        cmd = opendnp3.ControlRelayOutputBlock(opendnp3.ControlCode.LATCH_OFF)
+        with _master_lock:
+            master.send_direct_operate_command(cmd, 0, _command_callback)
+        state.set_command("OPEN / TRIP (BO-0 LATCH_OFF)")
+    finally:
+        _command_active.clear()
 
 
 def send_close_command(master: MyMaster, state: MasterState) -> None:
-    log_command("LATCH_ON", 0)
-    cmd = opendnp3.ControlRelayOutputBlock(opendnp3.ControlCode.LATCH_ON)
-    master.send_direct_operate_command(cmd, 0, _command_callback)
-    state.set_command("CLOSE (BO-0 LATCH_ON)")
+    _command_active.set()
+    try:
+        log_command("LATCH_ON", 0)
+        cmd = opendnp3.ControlRelayOutputBlock(opendnp3.ControlCode.LATCH_ON)
+        with _master_lock:
+            master.send_direct_operate_command(cmd, 0, _command_callback)
+        state.set_command("CLOSE (BO-0 LATCH_ON)")
+    finally:
+        _command_active.clear()

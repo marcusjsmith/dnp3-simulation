@@ -1,2 +1,3 @@
 dnp3-python==0.3.0b2
 flask==3.0.3
+waitress==3.0.0

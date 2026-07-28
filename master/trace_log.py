@@ -11,11 +11,8 @@ from pydnp3 import asiodnp3, opendnp3, openpal
 from dnp3_python.dnp3station.station_utils import SOEHandler
 
 HEX_BYTE_RE = re.compile(r"\b([0-9A-Fa-f]{2})\b")
-COMMS_LOG_LEVEL = (
-    opendnp3.levels.NORMAL
-    | opendnp3.levels.ALL_COMMS
-    | opendnp3.levels.ALL_APP_COMMS
-)
+# App-level + link summaries; avoid logging every raw byte fragment from ALL_COMMS.
+COMMS_LOG_LEVEL = opendnp3.levels.NORMAL | opendnp3.levels.ALL_APP_COMMS
 
 
 class TraceBuffer:
@@ -35,7 +32,9 @@ class TraceBuffer:
         hex_data: str = "",
         source: str = "stack",
     ) -> int:
-        with self._lock:
+        if not self._lock.acquire(blocking=False):
+            return self._seq
+        try:
             self._seq += 1
             entry = {
                 "id": self._seq,
@@ -49,9 +48,14 @@ class TraceBuffer:
             }
             self._entries.append(entry)
             return self._seq
+        finally:
+            self._lock.release()
 
     def add_from_log(self, location: str, message: str, logger_id: str = "") -> None:
         direction, layer, summary, hex_data = _parse_stack_message(location, message)
+        # Drop high-volume low-level hex fragments to avoid blocking the ASIO thread.
+        if layer == "INFO" and hex_data and len(message.strip()) < 40:
+            return
         detail = message
         if logger_id:
             detail = f"[{logger_id}] {message}"
@@ -104,7 +108,7 @@ def _parse_stack_message(location: str, message: str) -> tuple[str, str, str, st
         layer = "LINK"
     elif "transport" in loc or "transpt" in loc or lower.startswith("fir:"):
         layer = "TRANSPT"
-    elif "app" in loc or lower.startswith("fir:") and "func:" in lower:
+    elif "app" in loc or (lower.startswith("fir:") and "func:" in lower):
         layer = "APP"
     elif "func:" in lower and ("read" in lower or "response" in lower or "confirm" in lower):
         layer = "APP"
@@ -119,7 +123,7 @@ def _parse_stack_message(location: str, message: str) -> tuple[str, str, str, st
 
 
 class TraceLogger(openpal.ILogHandler):
-    """Captures opendnp3 stack log output into the trace buffer."""
+    """Captures opendnp3 stack log output into the trace buffer (non-blocking)."""
 
     def __init__(self, buffer: TraceBuffer):
         super().__init__()
@@ -154,6 +158,7 @@ class TracingSOEHandler(SOEHandler):
     def __init__(self, buffer: TraceBuffer, **kwargs):
         super().__init__(**kwargs)
         self.trace = buffer
+        self.logger.setLevel(100)  # suppress noisy SOE stdout logging
 
     def Process(self, info, values, *args, **kwargs):
         try:
@@ -161,15 +166,14 @@ class TracingSOEHandler(SOEHandler):
             self.trace.add(
                 "RX",
                 "APP",
-                f"Unsolicited / response data — {header}",
-                detail=header,
+                f"Response data — {header[:80]}",
+                detail=header[:300],
             )
         except Exception:
             pass
         return super().Process(info, values, *args, **kwargs)
 
 
-# Global trace buffer shared across modules
 trace_buffer = TraceBuffer()
 
 
