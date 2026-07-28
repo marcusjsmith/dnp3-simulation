@@ -181,6 +181,163 @@ footer {
   border-top: 1px solid var(--border);
 }
 
+/* DNP3 Protocol Trace (Wireshark-style) */
+.trace-panel { padding-bottom: 0.75rem; }
+
+.trace-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+.trace-header h2 { margin-bottom: 0; }
+
+.trace-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.trace-filter {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 0.35rem 0.6rem;
+  font-size: 0.85rem;
+  width: 160px;
+}
+
+.trace-autoscroll {
+  font-size: 0.8rem;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+}
+
+.btn.trace-clear {
+  background: #21262d;
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 0.35rem 0.75rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.trace-stats {
+  display: flex;
+  gap: 1.25rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin-bottom: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.trace-legend { display: flex; align-items: center; gap: 0.35rem; }
+.leg {
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+  font-family: monospace;
+}
+.leg.tx { background: rgba(88, 166, 255, 0.2); color: var(--blue); }
+.leg.rx { background: rgba(210, 153, 34, 0.2); color: var(--amber); }
+
+.trace-window {
+  background: #010409;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  max-height: 320px;
+  overflow: auto;
+  font-family: "SF Mono", "Cascadia Code", "Consolas", monospace;
+  font-size: 0.78rem;
+}
+
+.trace-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.trace-table th {
+  position: sticky;
+  top: 0;
+  background: #161b22;
+  color: var(--muted);
+  text-align: left;
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  font-weight: 500;
+  z-index: 1;
+}
+.trace-table td {
+  padding: 0.3rem 0.5rem;
+  border-bottom: 1px solid #21262d;
+  vertical-align: top;
+}
+.trace-row { cursor: pointer; }
+.trace-row:hover { background: #161b22; }
+.trace-row.selected { background: #1c2128; }
+.trace-row.dir-tx td { border-left: 3px solid var(--blue); }
+.trace-row.dir-rx td { border-left: 3px solid var(--amber); }
+.trace-row.dir-info td { border-left: 3px solid #484f58; }
+.trace-empty td {
+  text-align: center;
+  color: var(--muted);
+  padding: 1.5rem;
+  font-style: italic;
+}
+.mono { font-family: inherit; color: #8b949e; }
+.trace-info { color: var(--text); }
+
+.dir-badge {
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+}
+.dir-badge.tx { background: rgba(88, 166, 255, 0.15); color: var(--blue); }
+.dir-badge.rx { background: rgba(210, 153, 34, 0.15); color: var(--amber); }
+.dir-badge.info { background: rgba(139, 148, 158, 0.15); color: var(--muted); }
+
+.layer-badge {
+  font-size: 0.68rem;
+  color: #7ee787;
+  background: rgba(63, 185, 80, 0.1);
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+}
+
+.trace-detail {
+  margin-top: 0.5rem;
+  background: #010409;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+}
+.trace-detail-label {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.35rem;
+}
+#traceDetailText {
+  font-family: "SF Mono", "Cascadia Code", "Consolas", monospace;
+  font-size: 0.75rem;
+  color: #c9d1d9;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 140px;
+  overflow: auto;
+  margin: 0;
+}
+
 @media (max-width: 768px) {
   .columns { grid-template-columns: 1fr; }
   .metrics.compact { grid-template-columns: 1fr; }

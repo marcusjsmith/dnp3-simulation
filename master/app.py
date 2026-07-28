@@ -4,7 +4,7 @@ import os
 import signal
 import sys
 
-from flask import Flask, jsonify, render_template
+from flask import Flask, jsonify, render_template, request
 
 from dnp3_client import (
     MasterState,
@@ -12,6 +12,7 @@ from dnp3_client import (
     send_trip_command,
     start_master,
 )
+from trace_log import trace_buffer
 
 app = Flask(__name__)
 state = MasterState()
@@ -35,6 +36,18 @@ def index():
 @app.route("/api/status")
 def api_status():
     return jsonify(state.snapshot())
+
+
+@app.route("/api/trace")
+def api_trace():
+    since = int(request.args.get("since", 0))
+    return jsonify({"entries": trace_buffer.since(since), "total": trace_buffer.count()})
+
+
+@app.route("/api/trace/clear", methods=["POST"])
+def api_trace_clear():
+    trace_buffer.clear()
+    return jsonify({"ok": True})
 
 
 @app.route("/api/command/trip", methods=["POST"])

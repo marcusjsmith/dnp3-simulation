@@ -141,6 +141,100 @@ docker compose down --rmi local
 
 ---
 
+## Running on Separate Servers
+
+When the master and outstation run on **different hosts** (separate VMs, bare-metal servers, or cloud instances), only **one port is required for DNP3 communication** between them. The web UI ports are optional and only needed if you want browser access to each server.
+
+### Port requirements
+
+| Port | Protocol | Direction | Required on | Purpose |
+|------|----------|-----------|-------------|---------|
+| **20000** | TCP (DNP3) | Master → Outstation | **Outstation server** (inbound) | **Required.** Outstation listens; master initiates the TCP connection and all polling/commands flow over this port. |
+| **20000** | TCP (DNP3) | Outbound | **Master server** (outbound) | Master must be able to reach `<outstation-ip>:20000`. No inbound port needed on the master for DNP3. |
+| **8080** | HTTP | Inbound | Master server | Optional. Web UI and REST API for the master station only. Not used for master↔outstation DNP3 traffic. |
+| **8081** | HTTP | Inbound | Outstation server | Optional. Web UI for the recloser outstation only. Not used for master↔outstation DNP3 traffic. |
+
+```
+  Server A (Master)                         Server B (Outstation)
+ ┌─────────────────────┐                   ┌─────────────────────┐
+ │  dnp3-master        │   TCP :20000      │  dnp3-outstation    │
+ │  (TCP client)       │ ─────────────────►│  (TCP server)       │
+ │                     │   DNP3 polling    │  listens 0.0.0.0    │
+ │  Web UI :8080       │   & commands      │  Web UI :8081       │
+ └─────────────────────┘                   └─────────────────────┘
+        │                                           │
+   outbound only                             inbound :20000
+   to outstation IP                          from master IP
+```
+
+### Firewall rules
+
+On the **outstation server**, allow inbound TCP **20000** from the master server's IP address (or subnet):
+
+```bash
+# Example (Linux ufw) — replace with your master server IP
+sudo ufw allow from <master-server-ip> to any port 20000 proto tcp
+```
+
+On the **master server**, ensure outbound TCP **20000** to the outstation IP is permitted (usually allowed by default). No inbound DNP3 port is required on the master.
+
+Optionally open **8080** (master UI) and **8081** (outstation UI) on each host if operators need browser access from specific networks.
+
+### Deploying each container independently
+
+**1. Outstation server** — build and run the outstation, binding DNP3 on all interfaces:
+
+```bash
+cd dnp3-simulation/outstation
+docker build --platform linux/amd64 -t dnp3-outstation .
+docker run -d --name dnp3-outstation \
+  --platform linux/amd64 \
+  -p 20000:20000 \
+  -p 8081:8080 \
+  dnp3-outstation
+```
+
+The outstation listens on `0.0.0.0:20000` inside the container. Publish `-p 20000:20000` so the master can reach it via the host's IP.
+
+**2. Master server** — point `OUTSTATION_HOST` at the outstation server's **IP address or DNS name**:
+
+```bash
+cd dnp3-simulation/master
+docker build --platform linux/amd64 -t dnp3-master .
+docker run -d --name dnp3-master \
+  --platform linux/amd64 \
+  -p 8080:8080 \
+  -e OUTSTATION_HOST=<outstation-server-ip> \
+  -e OUTSTATION_PORT=20000 \
+  dnp3-master
+```
+
+Replace `<outstation-server-ip>` with the routable IP of the outstation host (e.g. `192.168.10.50` or `outstation.example.com`).
+
+### DNP3 addressing (must match on both sides)
+
+| Setting | Master | Outstation |
+|---------|--------|------------|
+| Master link address | 2 | expects master ID **2** |
+| Outstation link address | 1 | outstation ID **1** |
+| TCP port | connects to outstation `:20000` | listens on `:20000` |
+
+These addresses are fixed in the application defaults. If you change them, update both containers consistently.
+
+### Verify connectivity
+
+From the **master server**, confirm TCP reachability before starting the master container:
+
+```bash
+nc -zv <outstation-server-ip> 20000
+# or
+telnet <outstation-server-ip> 20000
+```
+
+Then open http://`<master-server-ip>`:8080 and confirm the **DNP3 Connected** badge is green.
+
+---
+
 ## Web UI Features
 
 ### Master Station (http://localhost:8080)
@@ -154,6 +248,7 @@ docker compose down --rmi local
   - **Send CLOSE Command** — DNP3 direct operate, closes the recloser
 - **Point database table** — last polled DNP3 values
 - **Connection badge** — shows DNP3 link status and poll count
+- **Protocol trace** — Wireshark-style live log of DNP3 frames and application messages
 
 ### Recloser Outstation (http://localhost:8081)
 
@@ -270,7 +365,7 @@ curl -X POST http://localhost:8081/api/local-close
 
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
-| Master shows **DNP3 Disconnected** | Outstation not ready | Wait 15–30 s; check `docker compose logs outstation` |
+| Master shows **DNP3 Disconnected** | Outstation not ready or firewall blocking | Wait 15–30 s; verify `nc -zv <outstation-ip> 20000` from master host; check firewall on outstation allows inbound TCP 20000 |
 | Port already in use | Another service on 8080/8081/20000 | Stop conflicting service or change ports in `docker-compose.yml` |
 | Slow startup on Mac | amd64 emulation | Normal on Apple Silicon; allow extra time for first build |
 | Master starts before outstation | Health check failed | `docker compose restart master` |

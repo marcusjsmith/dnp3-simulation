@@ -9,7 +9,18 @@ from datetime import datetime, timezone
 
 from pydnp3 import opendnp3
 from dnp3demo.control_workflow_demo import MyMaster
-from dnp3_python.dnp3station.station_utils import command_callback
+
+from trace_log import (
+    COMMS_LOG_LEVEL,
+    TraceChannelListener,
+    TraceLogger,
+    TracingSOEHandler,
+    log_command,
+    log_command_result,
+    log_poll_request,
+    log_poll_response,
+    trace_buffer,
+)
 
 
 @dataclass
@@ -43,6 +54,10 @@ class MasterState:
 
     def set_connected(self, connected: bool) -> None:
         with self._lock:
+            if connected and not self.dnp3_connected:
+                trace_buffer.add("INFO", "TCP", "DNP3 session established — Master 2 ↔ Outstation 1")
+            elif not connected and self.dnp3_connected:
+                trace_buffer.add("INFO", "TCP", "DNP3 session lost")
             self.dnp3_connected = connected
 
     def set_command(self, label: str, result: str = "Sent") -> None:
@@ -85,22 +100,36 @@ def _extract_points(db_result) -> tuple[dict, dict]:
     return analogs, binaries
 
 
+def _poll_group(master: MyMaster, group: int, variation: int):
+    log_poll_request(group, variation)
+    result = master.get_db_by_group_variation(group=group, variation=variation)
+    log_poll_response(group, variation, result)
+    return result
+
+
 def polling_loop(master: MyMaster, state: MasterState, stop_event: threading.Event) -> None:
     while not stop_event.is_set():
+        was_connected = state.dnp3_connected
         state.set_connected(master.is_connected)
         if master.is_connected:
+            if not was_connected:
+                trace_buffer.add("TX", "LINK", "Link status test / reset communication")
             try:
-                analog_result = master.get_db_by_group_variation(group=30, variation=6)
-                binary_result = master.get_db_by_group_variation(group=1, variation=2)
+                analog_result = _poll_group(master, 30, 6)
+                binary_result = _poll_group(master, 1, 2)
                 analogs, _ = _extract_points(analog_result)
                 _, binaries = _extract_points(binary_result)
                 if not analogs:
-                    analog_result = master.get_db_by_group_variation(group=30, variation=1)
+                    analog_result = _poll_group(master, 30, 1)
                     analogs, _ = _extract_points(analog_result)
                 state.update_from_poll(analogs, binaries)
-            except Exception:
-                pass
+            except Exception as exc:
+                trace_buffer.add("INFO", "APP", f"Poll error — {exc}")
         stop_event.wait(1.5)
+
+
+def _command_callback(result=None):
+    log_command_result(result)
 
 
 def start_master(
@@ -108,15 +137,21 @@ def start_master(
     outstation_host: str,
     port: int = 20000,
 ) -> tuple[MyMaster, threading.Event, threading.Thread]:
+    trace_buffer.add("INFO", "TCP", f"Starting DNP3 master — target {outstation_host}:{port}")
+
     master = MyMaster(
         outstation_ip=outstation_host,
         port=port,
         master_id=2,
         outstation_id=1,
+        log_handler=TraceLogger(trace_buffer),
+        listener=TraceChannelListener(trace_buffer),
+        soe_handler=TracingSOEHandler(trace_buffer),
+        channel_log_level=COMMS_LOG_LEVEL,
+        master_log_level=COMMS_LOG_LEVEL,
     )
     master.start()
 
-    # Wait for connection with retries
     for _ in range(30):
         if master.is_connected:
             break
@@ -134,12 +169,14 @@ def start_master(
 
 
 def send_trip_command(master: MyMaster, state: MasterState) -> None:
+    log_command("LATCH_OFF", 0)
     cmd = opendnp3.ControlRelayOutputBlock(opendnp3.ControlCode.LATCH_OFF)
-    master.send_direct_operate_command(cmd, 0, command_callback)
+    master.send_direct_operate_command(cmd, 0, _command_callback)
     state.set_command("OPEN / TRIP (BO-0 LATCH_OFF)")
 
 
 def send_close_command(master: MyMaster, state: MasterState) -> None:
+    log_command("LATCH_ON", 0)
     cmd = opendnp3.ControlRelayOutputBlock(opendnp3.ControlCode.LATCH_ON)
-    master.send_direct_operate_command(cmd, 0, command_callback)
+    master.send_direct_operate_command(cmd, 0, _command_callback)
     state.set_command("CLOSE (BO-0 LATCH_ON)")

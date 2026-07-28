@@ -134,6 +134,42 @@
         <tbody id="pointTable"></tbody>
       </table>
     </section>
+
+    <section class="panel trace-panel">
+      <div class="trace-header">
+        <h2>DNP3 Protocol Trace</h2>
+        <div class="trace-controls">
+          <input type="text" id="traceFilter" placeholder="Filter…" class="trace-filter">
+          <label class="trace-autoscroll"><input type="checkbox" id="traceAutoscroll" checked> Auto-scroll</label>
+          <button class="btn trace-clear" id="btnTraceClear">Clear</button>
+        </div>
+      </div>
+      <div class="trace-stats">
+        <span>Messages: <strong id="traceCount">0</strong></span>
+        <span class="trace-legend"><span class="leg tx">TX</span> Master → Outstation</span>
+        <span class="trace-legend"><span class="leg rx">RX</span> Outstation → Master</span>
+      </div>
+      <div class="trace-window" id="traceWindow">
+        <table class="trace-table">
+          <thead>
+            <tr>
+              <th>No.</th>
+              <th>Time</th>
+              <th>Dir</th>
+              <th>Layer</th>
+              <th>Info</th>
+            </tr>
+          </thead>
+          <tbody id="traceBody">
+            <tr class="trace-empty"><td colspan="5">Waiting for DNP3 traffic…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="trace-detail" id="traceDetail">
+        <span class="trace-detail-label">Detail</span>
+        <pre id="traceDetailText">Select a row to inspect the full message.</pre>
+      </div>
+    </section>
   </main>
 
   <footer>
@@ -213,8 +249,104 @@
     $('btnTrip').addEventListener('click', () => sendCommand('/api/command/trip'));
     $('btnClose').addEventListener('click', () => sendCommand('/api/command/close'));
 
+    // --- DNP3 Protocol Trace ---
+    let lastTraceId = 0;
+    let traceEntries = [];
+    let selectedTraceId = null;
+
+    function formatHex(hex) {
+      if (!hex) return '';
+      const bytes = hex.split(/\s+/);
+      let out = '';
+      for (let i = 0; i < bytes.length; i += 16) {
+        const chunk = bytes.slice(i, i + 16);
+        const offset = i.toString(16).padStart(4, '0');
+        out += offset + '  ' + chunk.join(' ') + '\n';
+      }
+      return out.trim();
+    }
+
+    function renderTrace() {
+      const filter = ($('traceFilter').value || '').toLowerCase();
+      const filtered = traceEntries.filter(e =>
+        !filter ||
+        e.summary.toLowerCase().includes(filter) ||
+        e.detail.toLowerCase().includes(filter) ||
+        e.layer.toLowerCase().includes(filter) ||
+        e.dir.toLowerCase().includes(filter)
+      );
+
+      $('traceCount').textContent = traceEntries.length;
+
+      if (filtered.length === 0) {
+        $('traceBody').innerHTML = '<tr class="trace-empty"><td colspan="5">No matching messages</td></tr>';
+        return;
+      }
+
+      $('traceBody').innerHTML = filtered.map(e => `
+        <tr class="trace-row dir-${e.dir.toLowerCase()}${selectedTraceId === e.id ? ' selected' : ''}"
+            data-id="${e.id}">
+          <td class="mono">${e.id}</td>
+          <td class="mono">${e.time}</td>
+          <td><span class="dir-badge ${e.dir.toLowerCase()}">${e.dir}</span></td>
+          <td><span class="layer-badge">${e.layer}</span></td>
+          <td class="trace-info">${escapeHtml(e.summary)}</td>
+        </tr>
+      `).join('');
+
+      document.querySelectorAll('.trace-row').forEach(row => {
+        row.addEventListener('click', () => selectTrace(parseInt(row.dataset.id)));
+      });
+
+      if ($('traceAutoscroll').checked) {
+        $('traceWindow').scrollTop = $('traceWindow').scrollHeight;
+      }
+    }
+
+    function escapeHtml(s) {
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    function selectTrace(id) {
+      selectedTraceId = id;
+      const entry = traceEntries.find(e => e.id === id);
+      if (!entry) return;
+      let text = entry.detail || entry.summary;
+      if (entry.hex) {
+        text += '\n\n--- Frame bytes ---\n' + formatHex(entry.hex);
+      }
+      $('traceDetailText').textContent = text;
+      renderTrace();
+    }
+
+    async function refreshTrace() {
+      try {
+        const res = await fetch(`/api/trace?since=${lastTraceId}`);
+        const data = await res.json();
+        if (data.entries && data.entries.length > 0) {
+          traceEntries = traceEntries.concat(data.entries);
+          if (traceEntries.length > 500) traceEntries = traceEntries.slice(-500);
+          lastTraceId = traceEntries[traceEntries.length - 1].id;
+          renderTrace();
+        }
+      } catch (e) { /* ignore */ }
+    }
+
+    $('btnTraceClear').addEventListener('click', async () => {
+      await fetch('/api/trace/clear', { method: 'POST' });
+      traceEntries = [];
+      lastTraceId = 0;
+      selectedTraceId = null;
+      $('traceDetailText').textContent = 'Trace cleared.';
+      renderTrace();
+    });
+
+    $('traceFilter').addEventListener('input', renderTrace);
+
     setInterval(refresh, 1000);
+    setInterval(refreshTrace, 500);
     refresh();
+    refreshTrace();
   </script>
 </body>
 </html>
