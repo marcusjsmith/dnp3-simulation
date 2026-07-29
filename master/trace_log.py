@@ -141,15 +141,19 @@ class TraceLogger(openpal.ILogHandler):
 
 
 class TraceChannelListener(asiodnp3.IChannelListener):
-    """Logs TCP channel state transitions."""
+    """Logs TCP channel state transitions and updates cached link status."""
 
-    def __init__(self, buffer: TraceBuffer):
+    def __init__(self, buffer: TraceBuffer, link_state=None):
         super().__init__()
         self.buffer = buffer
+        self.link_state = link_state
 
     def OnStateChange(self, state) -> None:
         label = opendnp3.ChannelStateToString(state)
         self.buffer.add("INFO", "TCP", f"Channel state → {label}")
+        if self.link_state is not None:
+            connected = state == opendnp3.ChannelState.OPEN
+            self.link_state.set_connected(connected)
 
 
 class TracingSOEHandler(SOEHandler):

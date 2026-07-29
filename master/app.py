@@ -53,17 +53,19 @@ def api_trace_clear():
 
 @app.route("/api/command/trip", methods=["POST"])
 def command_trip():
-    if not master or not master.is_connected:
+    if not state.dnp3_connected:
         return jsonify({"ok": False, "error": "DNP3 not connected"}), 503
-    send_trip_command(master, state)
+    if not send_trip_command(master, state):
+        return jsonify({"ok": False, "error": "Master busy or not connected"}), 503
     return jsonify({"ok": True, "state": state.snapshot()})
 
 
 @app.route("/api/command/close", methods=["POST"])
 def command_close():
-    if not master or not master.is_connected:
+    if not state.dnp3_connected:
         return jsonify({"ok": False, "error": "DNP3 not connected"}), 503
-    send_close_command(master, state)
+    if not send_close_command(master, state):
+        return jsonify({"ok": False, "error": "Master busy or not connected"}), 503
     return jsonify({"ok": True, "state": state.snapshot()})
 
 

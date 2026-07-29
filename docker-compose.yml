@@ -20,6 +20,7 @@ services:
     build: ./master
     platform: linux/amd64
     container_name: dnp3-master-station
+    restart: unless-stopped
     ports:
       - "8080:8080"
     environment:

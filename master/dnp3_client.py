@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
@@ -22,10 +23,14 @@ from trace_log import (
     trace_buffer,
 )
 
+_log = logging.getLogger(__name__)
+
 # Serialize every call into the opendnp3 master stack (not thread-safe).
 _master_lock = threading.Lock()
 # Pause background polling while a command is in flight.
 _command_active = threading.Event()
+# Max time to wait for the stack lock before failing a web command.
+_STACK_LOCK_TIMEOUT = 10.0
 
 
 @dataclass
@@ -125,24 +130,31 @@ def _run_poll_cycle(master: MyMaster, state: MasterState) -> None:
 
 
 def polling_loop(master: MyMaster, state: MasterState, stop_event: threading.Event) -> None:
+    """Poll outstation on a background thread — never call stack APIs without the lock."""
     while not stop_event.is_set():
         if _command_active.is_set():
             stop_event.wait(0.1)
             continue
 
-        was_connected = state.dnp3_connected
-        with _master_lock:
-            if _command_active.is_set():
+        if not state.dnp3_connected:
+            stop_event.wait(1.5)
+            continue
+
+        if not _master_lock.acquire(timeout=0.5):
+            stop_event.wait(0.5)
+            continue
+
+        try:
+            if _command_active.is_set() or not state.dnp3_connected:
                 continue
-            connected = master.is_connected
-            state.set_connected(connected)
-            if connected:
-                if not was_connected:
-                    trace_buffer.add("TX", "LINK", "Link status test / reset communication")
+            was_connected = state.dnp3_connected
+            if was_connected:
                 try:
                     _run_poll_cycle(master, state)
                 except Exception as exc:
                     trace_buffer.add("INFO", "APP", f"Poll error — {exc}")
+        finally:
+            _master_lock.release()
 
         stop_event.wait(1.5)
 
@@ -164,7 +176,7 @@ def start_master(
         master_id=2,
         outstation_id=1,
         log_handler=TraceLogger(trace_buffer),
-        listener=TraceChannelListener(trace_buffer),
+        listener=TraceChannelListener(trace_buffer, link_state=state),
         soe_handler=TracingSOEHandler(trace_buffer),
         channel_log_level=COMMS_LOG_LEVEL,
         master_log_level=COMMS_LOG_LEVEL,
@@ -172,7 +184,7 @@ def start_master(
     master.start()
 
     for _ in range(30):
-        if master.is_connected:
+        if state.dnp3_connected:
             break
         time.sleep(1)
 
@@ -187,25 +199,45 @@ def start_master(
     return master, stop_event, thread
 
 
-def send_trip_command(master: MyMaster, state: MasterState) -> None:
+def send_trip_command(master: MyMaster, state: MasterState) -> bool:
+    if not state.dnp3_connected:
+        return False
+
     _command_active.set()
     try:
-        log_command("LATCH_OFF", 0)
-        cmd = opendnp3.ControlRelayOutputBlock(opendnp3.ControlCode.LATCH_OFF)
-        with _master_lock:
+        if not _master_lock.acquire(timeout=_STACK_LOCK_TIMEOUT):
+            _log.warning("Trip command skipped — master stack busy")
+            state.set_command("OPEN / TRIP (BO-0 LATCH_OFF)", "Busy")
+            return False
+        try:
+            log_command("LATCH_OFF", 0)
+            cmd = opendnp3.ControlRelayOutputBlock(opendnp3.ControlCode.LATCH_OFF)
             master.send_direct_operate_command(cmd, 0, _command_callback)
-        state.set_command("OPEN / TRIP (BO-0 LATCH_OFF)")
+            state.set_command("OPEN / TRIP (BO-0 LATCH_OFF)")
+            return True
+        finally:
+            _master_lock.release()
     finally:
         _command_active.clear()
 
 
-def send_close_command(master: MyMaster, state: MasterState) -> None:
+def send_close_command(master: MyMaster, state: MasterState) -> bool:
+    if not state.dnp3_connected:
+        return False
+
     _command_active.set()
     try:
-        log_command("LATCH_ON", 0)
-        cmd = opendnp3.ControlRelayOutputBlock(opendnp3.ControlCode.LATCH_ON)
-        with _master_lock:
+        if not _master_lock.acquire(timeout=_STACK_LOCK_TIMEOUT):
+            _log.warning("Close command skipped — master stack busy")
+            state.set_command("CLOSE (BO-0 LATCH_ON)", "Busy")
+            return False
+        try:
+            log_command("LATCH_ON", 0)
+            cmd = opendnp3.ControlRelayOutputBlock(opendnp3.ControlCode.LATCH_ON)
             master.send_direct_operate_command(cmd, 0, _command_callback)
-        state.set_command("CLOSE (BO-0 LATCH_ON)")
+            state.set_command("CLOSE (BO-0 LATCH_ON)")
+            return True
+        finally:
+            _master_lock.release()
     finally:
         _command_active.clear()
