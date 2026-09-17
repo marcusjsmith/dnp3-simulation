@@ -31,7 +31,7 @@ Docker-based simulation of a DNP3 SCADA **master station** and a **recloser outs
 - ~500 MB disk for images
 - Ports **8080**, **8081**, and **20000** available on the host
 
-> **Apple Silicon (M1/M2/M3):** The `dnp3-python` package only publishes **linux/amd64** wheels. The compose file sets `platform: linux/amd64`, so containers run under emulation. Expect slightly slower startup on Mac.
+> **Apple Silicon (M1/M2/M3) and Raspberry Pi:** The `dnp3-python` package only publishes **linux/amd64** wheels. The compose file and Dockerfiles set `platform: linux/amd64`, so containers run under emulation. Expect slower startup on Mac and Raspberry Pi. See [Raspberry Pi (two dedicated boards)](#raspberry-pi-two-dedicated-boards) for split-host install steps.
 
 ---
 
@@ -233,6 +233,78 @@ telnet <outstation-server-ip> 20000
 
 Then open http://`<master-server-ip>`:8080 and confirm the **DNP3 Connected** badge is green.
 
+### Raspberry Pi (two dedicated boards)
+
+Use **two Raspberry Pi 4/5s** with **64-bit Raspberry Pi OS**. Because `dnp3-python` only ships **x86_64** wheels, both boards run the containers as **linux/amd64** under QEMU emulation. Expect slower startup than on a PC.
+
+Assign **Pi A** as the outstation and **Pi B** as the master. Only TCP **20000** is required from master → outstation.
+
+**On both Pis:**
+
+```bash
+sudo apt update
+sudo apt install -y git docker.io qemu-user-static binfmt-support
+sudo usermod -aG docker $USER
+# log out and back in (or reboot)
+git clone https://github.com/marcusjsmith/dnp3-simulation.git
+cd dnp3-simulation
+hostname -I   # note each Pi's LAN IP
+```
+
+**Pi A — Outstation:**
+
+```bash
+cd ~/dnp3-simulation/outstation
+docker build --platform linux/amd64 -t dnp3-outstation .
+docker run -d --name dnp3-outstation --restart unless-stopped \
+  --platform linux/amd64 \
+  -p 20000:20000 \
+  -p 8081:8080 \
+  dnp3-outstation
+```
+
+Allow DNP3 from the master Pi (replace with Pi B's IP):
+
+```bash
+sudo ufw allow from <MASTER_PI_IP> to any port 20000 proto tcp
+sudo ufw allow 8081/tcp   # optional, for the outstation web UI
+sudo ufw enable
+```
+
+Outstation UI: `http://<OUTSTATION_PI_IP>:8081`
+
+**Pi B — Master:**
+
+```bash
+cd ~/dnp3-simulation/master
+docker build --platform linux/amd64 -t dnp3-master .
+docker run -d --name dnp3-master --restart unless-stopped \
+  --platform linux/amd64 \
+  -p 8080:8080 \
+  -e OUTSTATION_HOST=<OUTSTATION_PI_IP> \
+  -e OUTSTATION_PORT=20000 \
+  dnp3-master
+```
+
+Optional UI access:
+
+```bash
+sudo ufw allow 8080/tcp
+sudo ufw enable
+```
+
+Master UI: `http://<MASTER_PI_IP>:8080`
+
+**Check it** from the master Pi:
+
+```bash
+nc -zv <OUTSTATION_PI_IP> 20000
+```
+
+Open the master UI and wait until **DNP3 Connected** is green (can take 15–30 seconds on a Pi). Then use **Send OPEN / CLOSE**.
+
+Addresses are already set: **master ID 2**, **outstation ID 1**, DNP3 port **20000**. Set `OUTSTATION_HOST` to the outstation Pi's LAN IP (not `outstation` or `localhost`).
+
 ---
 
 ## Web UI Features
@@ -367,7 +439,7 @@ curl -X POST http://localhost:8081/api/local-close
 |---------|--------------|-----|
 | Master shows **DNP3 Disconnected** | Outstation not ready or firewall blocking | Wait 15–30 s; verify `nc -zv <outstation-ip> 20000` from master host; check firewall on outstation allows inbound TCP 20000 |
 | Port already in use | Another service on 8080/8081/20000 | Stop conflicting service or change ports in `docker-compose.yml` |
-| Slow startup on Mac | amd64 emulation | Normal on Apple Silicon; allow extra time for first build |
+| Slow startup on Mac or Raspberry Pi | amd64 emulation | Normal; `dnp3-python` has no ARM wheels. Allow extra time for first build |
 | Master starts before outstation | Health check failed | `docker compose restart master` |
 | Commands have no effect | DNP3 not connected | Verify connection badge; restart both containers |
 
