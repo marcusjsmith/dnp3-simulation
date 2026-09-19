@@ -305,6 +305,47 @@ Open the master UI and wait until **DNP3 Connected** is green (can take 15–30 
 
 Addresses are already set: **master ID 2**, **outstation ID 1**, DNP3 port **20000**. Set `OUTSTATION_HOST` to the outstation Pi's LAN IP (not `outstation` or `localhost`).
 
+### Upgrade Raspberry Pi hosts after a GitHub push
+
+When changes are pushed to GitHub, update **each Pi** by pulling the new code, rebuilding the image, and recreating the running container. Upgrade the **outstation first**, then the **master**.
+
+**Pi A — Outstation:**
+
+```bash
+cd ~/dnp3-simulation
+git pull
+cd outstation
+docker build --platform linux/amd64 -t dnp3-outstation .
+docker rm -f dnp3-outstation
+docker run -d --name dnp3-outstation --restart unless-stopped \
+  --platform linux/amd64 \
+  -p 20000:20000 \
+  -p 8081:8080 \
+  dnp3-outstation
+```
+
+**Pi B — Master** (keep `OUTSTATION_HOST` as Pi A's LAN IP):
+
+```bash
+cd ~/dnp3-simulation
+git pull
+cd master
+docker build --platform linux/amd64 -t dnp3-master .
+docker rm -f dnp3-master
+docker run -d --name dnp3-master --restart unless-stopped \
+  --platform linux/amd64 \
+  -p 8080:8080 \
+  -e OUTSTATION_HOST=<OUTSTATION_PI_IP> \
+  -e OUTSTATION_PORT=20000 \
+  dnp3-master
+```
+
+Confirm the master UI shows **DNP3 Connected**. Optional cleanup of old images:
+
+```bash
+docker image prune -f
+```
+
 ---
 
 ## Web UI Features
